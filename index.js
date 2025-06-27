@@ -42,7 +42,6 @@ function getDateRange() {
   };
 }
 
-
 async function fetchAndCacheData() {
   try {
     const { start_at, end_at } = getDateRange();
@@ -56,19 +55,31 @@ async function fetchAndCacheData() {
       throw new Error("Invalid affiliate data");
     }
 
-    const filtered = json.affiliates.filter(a => a.username && a.wagered_amount);
-    const sorted = filtered.sort((a, b) => parseFloat(b.wagered_amount) - parseFloat(a.wagered_amount));
+    const filtered = json.affiliates.filter(
+      a =>
+        a.username &&
+        !a.username.toLowerCase().includes("tyler") &&
+        !isNaN(parseFloat(a.wagered_amount))
+    );
+
+    const sorted = filtered.sort(
+      (a, b) => parseFloat(b.wagered_amount) - parseFloat(a.wagered_amount)
+    );
+
     const top10 = sorted.slice(0, 10);
 
     if (top10.length >= 2) {
       [top10[0], top10[1]] = [top10[1], top10[0]];
     }
 
-    cachedData = top10.map(entry => ({
-      username: maskUsername(entry.username),
-      wagered: Math.round(parseFloat(entry.wagered_amount)),
-      weightedWager: Math.round(parseFloat(entry.wagered_amount))
-    }));
+    cachedData = top10.map(entry => {
+      const wager = Math.round(parseFloat(entry.wagered_amount));
+      return {
+        username: maskUsername(entry.username),
+        wagered: wager,
+        weightedWager: wager
+      };
+    });
 
     console.log(`[✅] Leaderboard updated for period ${start_at} → ${end_at}`);
   } catch (err) {
@@ -77,18 +88,18 @@ async function fetchAndCacheData() {
 }
 
 fetchAndCacheData();
-setInterval(fetchAndCacheData, 5 * 60 * 1000);
+setInterval(fetchAndCacheData, 5 * 60 * 1000); // every 5 minutes
 
 app.get("/leaderboard/top14", (req, res) => {
   res.json(cachedData);
 });
 
-// Optional self-ping
+// Optional self-ping to keep alive
 const SELF_URL = "https://ceroydata.onrender.com/leaderboard/top14";
 setInterval(() => {
   fetch(SELF_URL)
     .then(() => console.log(`[🔁] Self-pinged ${SELF_URL}`))
     .catch(err => console.error("[⚠️] Self-ping failed:", err.message));
-}, 270000);
+}, 270000); // every 4.5 minutes
 
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
