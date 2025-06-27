@@ -55,7 +55,7 @@ async function fetchAndCacheData() {
       (a, b) => parseFloat(b.wagered_amount) - parseFloat(a.wagered_amount)
     );
 
-    const top10 = sorted.slice(0, 10);
+    const top10 = sorted.slice(0, 20);
     if (top10.length >= 2) [top10[0], top10[1]] = [top10[1], top10[0]];
 
     cachedData = top10.map(entry => ({
