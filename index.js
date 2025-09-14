@@ -1,86 +1,112 @@
-import express from "express";
-import fetch from "node-fetch";
+import express from 'express';
+import cors from 'cors';
+import fetch from 'node-fetch';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const SELF_URL = "https://ceroydata.onrender.com/leaderboard/top14";
-const API_KEY = "FbIc2agHLlrBXGZblcmgdGDv6MX6C1Zi";
+const PORT = process.env.PORT || 5000;
 
-let cachedData = [];
+app.use(cors());
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
-  next();
-});
+// Get current month start and end (UTC)
+function getCurrentMonthRangeUTC() {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const start = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59));
+  return [start, end];
+}
 
+// Get previous month start and end (UTC)
+function getPreviousMonthRangeUTC() {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const prevMonth = month === 0 ? 11 : month - 1;
+  const prevYear = month === 0 ? year - 1 : year;
+  const start = new Date(Date.UTC(prevYear, prevMonth, 1, 0, 0, 0));
+  const end = new Date(Date.UTC(prevYear, prevMonth + 1, 0, 23, 59, 59));
+  return [start, end];
+}
+
+// Mask usernames (first 2 letters + *** + last 2)
 function maskUsername(username) {
   if (username.length <= 4) return username;
-  return username.slice(0, 2) + "***" + username.slice(-2);
+  return username.slice(0, 2) + '***' + username.slice(-2);
 }
 
-function getDynamicApiUrl() {
-  const now = new Date();
-  let startMonth = now.getUTCMonth();
-  let startYear = now.getUTCFullYear();
+const [START_TIME, END_TIME] = getCurrentMonthRangeUTC();
+const START_DATE = START_TIME.toISOString().split('T')[0];
+const END_DATE = END_TIME.toISOString().split('T')[0];
 
-  if (now.getUTCDate() < 26) {
-    startMonth -= 1;
-    if (startMonth < 0) {
-      startMonth = 11;
-      startYear -= 1;
-    }
-  }
+const API_URL = `https://services.rainbet.com/v1/external/affiliates?start_at=${START_DATE}&end_at=${END_DATE}&key=FbIc2agHLlrBXGZblcmgdGDv6MX6C1Zi`;
 
-  const start = new Date(Date.UTC(startYear, startMonth, 26));
-  const end = new Date(Date.UTC(startYear, startMonth + 1, 25, 23, 59, 59));
-
-  const startStr = start.toISOString().slice(0, 10);
-  const endStr = end.toISOString().slice(0, 10);
-
-  console.log(`[ℹ️] Fetching data from ${startStr} to ${endStr}`);
-
-  return `https://services.rainbet.com/v1/external/affiliates?start_at=${startStr}&end_at=${endStr}&key=${API_KEY}`;
-}
-
-
-async function fetchAndCacheData() {
+// === /api/leaderboard/rainbet ===
+app.get('/api/leaderboard/rainbet', async (req, res) => {
   try {
-    const response = await fetch(getDynamicApiUrl());
-    const json = await response.json();
-    if (!json.affiliates) throw new Error("No data");
-
-    const sorted = json.affiliates.sort(
-      (a, b) => parseFloat(b.wagered_amount) - parseFloat(a.wagered_amount)
-    );
-
-    const top10 = sorted.slice(0, 20);
-    if (top10.length >= 2) [top10[0], top10[1]] = [top10[1], top10[0]];
-
-    cachedData = top10.map(entry => ({
-      username: maskUsername(entry.username),
-      wagered: Math.round(parseFloat(entry.wagered_amount)),
-      weightedWager: Math.round(parseFloat(entry.wagered_amount)),
+    const response = await fetch(API_URL);
+    const data = await response.json();
+    let leaderboard = data.affiliates.map(entry => ({
+      name: maskUsername(entry.username),
+      wager: parseFloat(entry.wagered_amount)
     }));
-
-    console.log(`[✅] Leaderboard updated`);
-  } catch (err) {
-    console.error("[❌] Failed to fetch Rainbet data:", err.message);
+    leaderboard.sort((a, b) => b.wager - a.wager);
+    leaderboard = leaderboard.slice(0, 10);
+    const prizes = [
+      500, 250, 150, 100, 75, 50, 30, 20, 15, 10
+    ].map((reward, i) => ({ position: i + 1, reward }));
+    res.json({
+      leaderboard,
+      prizes,
+      startTime: START_TIME.toISOString(),
+      endTime: END_TIME.toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching leaderboard:', error);
+    res.status(500).json({ error: 'Failed to fetch leaderboard data' });
   }
-}
-
-fetchAndCacheData();
-setInterval(fetchAndCacheData, 5 * 60 * 1000); // every 5 minutes
-
-app.get("/leaderboard/top14", (req, res) => {
-  res.json(cachedData);
 });
 
-setInterval(() => {
-  fetch(SELF_URL)
-    .then(() => console.log(`[🔁] Self-pinged ${SELF_URL}`))
-    .catch(err => console.error("[⚠️] Self-ping failed:", err.message));
-}, 270000); // every 4.5 mins
+// === /api/prev-leaderboard/rainbet ===
+app.get('/api/prev-leaderboard/rainbet', async (req, res) => {
+  try {
+    const [PREV_START_TIME, PREV_END_TIME] = getPreviousMonthRangeUTC();
+    const PREV_START_DATE = PREV_START_TIME.toISOString().split('T')[0];
+    const PREV_END_DATE = PREV_END_TIME.toISOString().split('T')[0];
+    const PREV_API_URL = `https://services.rainbet.com/v1/external/affiliates?start_at=${PREV_START_DATE}&end_at=${PREV_END_DATE}&key=FbIc2agHLlrBXGZblcmgdGDv6MX6C1Zi`;
+    const response = await fetch(PREV_API_URL);
+    const data = await response.json();
+    let leaderboard = data.affiliates.map(entry => ({
+      name: maskUsername(entry.username),
+      wager: parseFloat(entry.wagered_amount)
+    }));
+    leaderboard.sort((a, b) => b.wager - a.wager);
+    leaderboard = leaderboard.slice(0, 10);
+    const prizes = [
+      500, 250, 150, 100, 75, 50, 30, 20, 15, 10
+    ].map((reward, i) => ({ position: i + 1, reward }));
+    res.json({
+      leaderboard,
+      prizes,
+      startTime: PREV_START_TIME.toISOString(),
+      endTime: PREV_END_TIME.toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching previous leaderboard:', error);
+    res.status(500).json({ error: 'Failed to fetch previous leaderboard data' });
+  }
+});
 
-app.listen(PORT, () => console.log(`🚀 Running on port ${PORT}`));
+// === /api/countdown/rainbet ===
+app.get('/api/countdown/rainbet', (req, res) => {
+  const now = new Date();
+  const total = END_TIME - START_TIME;
+  const remaining = END_TIME - now;
+  const percentageLeft = Math.max(0, Math.min(100, (remaining / total) * 100));
+  res.json({ percentageLeft: parseFloat(percentageLeft.toFixed(2)) });
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`✅ Server running at http://localhost:${PORT}`);
+});
